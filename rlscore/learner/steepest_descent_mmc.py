@@ -27,7 +27,7 @@ import numpy as np
 import random as pyrandom
 pyrandom.seed(200)
 
-import _steepest_descent_mmc
+from . import _steepest_descent_mmc
 
 from rlscore.utilities import adapter
 from rlscore.utilities import array_tools
@@ -144,6 +144,7 @@ class SteepestDescentMMC(PredictorInterface):
         self.size = self.Y.shape[0]
         self.labelcount = self.Y.shape[1]
         self.classvec = - np.ones((self.size), dtype = np.int32)
+        self.lockvec = np.zeros((self.size), dtype = np.int32)
         self.classcounts = np.zeros((self.labelcount), dtype = np.int32)
         for i in range(self.size):
             clazzind = 0
@@ -180,20 +181,22 @@ class SteepestDescentMMC(PredictorInterface):
         self.VTY = self.svecs.T * self.Y
         
         self.sqrtR = np.multiply(np.sqrt(newevalslamtilde), self.svecs)
+        
         self.R = self.sqrtR * self.sqrtR.T
         self.mdiagRx2 = - 2 * np.diag(self.R)
         
-        '''
+        #'''
         #Space efficient variation
-        self.R = None
-        self.mdiagRx2 = - 2 * array(sum(np.multiply(self.sqrtR, self.sqrtR), axis = 1)).reshape((self.size))
-        '''
+        #self.R = None
+        #self.mdiagRx2 = - 2 * np.array(np.sum(np.multiply(self.sqrtR, self.sqrtR), axis = 1)).reshape((self.size))
+        #'''
         
         self.RY = self.sqrtR * (self.sqrtR.T * self.Y)
         self.Y_Schur_RY = np.multiply(self.Y, self.RY)
         
         self.YTRY_list = []
         self.classFitnessList = []
+        
         for i in range(self.labelcount):
             YTRY_i = self.Y[:,i].T * self.RY[:,i]
             self.YTRY_list.append(YTRY_i)
@@ -205,17 +208,8 @@ class SteepestDescentMMC(PredictorInterface):
         
         
         converged = False
-        #print self.classcounts.T
         if not self.callbackfun is None:
             self.callbackfun.callback(self)
-        '''while True:
-            
-            converged = self.findSteepestDir()
-            print self.classcounts.T
-            self.callback()
-            if converged: break
-        
-        '''
         
         cons = self.size / self.labelcount
         for i in range(20):
@@ -242,6 +236,22 @@ class SteepestDescentMMC(PredictorInterface):
     def updateA(self):
         self.A = self.svecs * np.multiply(self.newevals.T, self.VTY)
     
+    def claim_n_points(self, howmany, newclazz):
+        _steepest_descent_mmc.claim_n_points(self.Y,
+                                                self.R,
+                                                self.RY,
+                                                self.Y_Schur_RY,
+                                                self.classFitnessRowVec,
+                                                self.mdiagRx2,
+                                                self.classcounts,
+                                                self.classvec,
+                                                self.size,
+                                                self.labelcount,
+                                                howmany,
+                                                self.sqrtR,
+                                                self.sqrtR.shape[1],
+                                                self.lockvec,
+                                                newclazz)
     
     def findSteepestDirRotateClasses(self, howmany, LOO = False):
         _steepest_descent_mmc.findSteepestDirRotateClasses(self.Y,
@@ -256,7 +266,8 @@ class SteepestDescentMMC(PredictorInterface):
                                                 self.labelcount,
                                                 howmany,
                                                 self.sqrtR,
-                                                self.sqrtR.shape[1])
+                                                self.sqrtR.shape[1],
+                                                self.lockvec)
         return
         
         #The slow python code. Use the above cython instead.
@@ -304,7 +315,6 @@ class SteepestDescentMMC(PredictorInterface):
             #self.focusset = self.findNewFocusSet(j)
             #self.focusset = pyrandom.sample(range(self.size),50)
             #takenum = 2*((len(self.focusset) / self.labelcount) - (len(self.focusset) / self.size) * self.classcounts[j] + int(howmany))
-            #print takenum
             #self.focusset = pyrandom.sample(range(self.size),takenum[0,0])
             #self.focusset = self.findNewFocusSet(j, maxtake)
             #self.focusset = set(range(self.size))
@@ -392,7 +402,7 @@ class RandomLabelSource(object):
         allinds = set(range(size))
         self.classcounts = np.zeros((labelcount), dtype = np.int32)
         for i in range(labelcount-1):
-            inds = self.rand.sample(allinds, size / labelcount) #sampling without replacement
+            inds = self.rand.sample(allinds, int(size / labelcount)) #sampling without replacement
             allinds = allinds - set(inds)
             for ind in inds:
                 self.Y[ind, i] = 1.

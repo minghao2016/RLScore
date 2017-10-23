@@ -41,7 +41,6 @@ CALLBACK_FUNCTION = 'callback'
 def func(v, X1, X2, Y, rowind, colind, lamb):
     P = sampled_kronecker_products.sampled_vec_trick(v, X2, X1, colind, rowind)
     z = (1. - Y*P)
-    #print z
     z = np.where(z>0, z, 0)
     #return np.dot(z,z)
     return 0.5*(np.dot(z,z)+lamb*np.dot(v,v))
@@ -78,22 +77,22 @@ class KronSVM(PairwisePredictorInterface):
         self.label_col_inds = np.array(kwargs["label_col_inds"], dtype = np.int32)
         self.Y = Y
         self.trained = False
-        if kwargs.has_key("regparam"):
+        if "regparam" in kwargs:
             self.regparam = kwargs["regparam"]
         else:
             self.regparam = 1.0
-        if kwargs.has_key(CALLBACK_FUNCTION):
+        if CALLBACK_FUNCTION in kwargs:
             self.callbackfun = kwargs[CALLBACK_FUNCTION]
         else:
             self.callbackfun = None
-        if kwargs.has_key("compute_risk"):
+        if "compute_risk" in kwargs:
             self.compute_risk = kwargs["compute_risk"]
         else:
             self.compute_risk = False
         
         regparam = self.regparam
         
-        if not self.resource_pool.has_key('K1'):
+        if not 'K1' in self.resource_pool:
             self.regparam = regparam
             X1 = self.resource_pool['X1']
             X2 = self.resource_pool['X2']
@@ -131,7 +130,7 @@ class KronSVM(PairwisePredictorInterface):
                 g = gradient(w, X1, X2, Y, rowind, colind, lamb)
                 G = LinearOperator((fdim, fdim), matvec=mv, rmatvec=mv, dtype=np.float64)
                 self.best_residual = float("inf")
-                self.w_new = qmr(G, g, maxiter=inneriter)[0]
+                self.w_new = qmr(G, g, tol=1e-10, maxiter=inneriter)[0]
                 if np.all(w == w - self.w_new):
                     break
                 w = w - self.w_new
@@ -167,38 +166,72 @@ class KronSVM(PairwisePredictorInterface):
             ddim = len(rowind)
             a = np.zeros(ddim)
             self.bestloss = float("inf")
+            
             def func(a):
-                #REPLACE
-                #P = np.dot(X,v)
                 P =  sampled_kronecker_products.sampled_vec_trick(a, K2, K1, colind, rowind, colind, rowind)
                 z = (1. - Y*P)
                 z = np.where(z>0, z, 0)
                 Ka = sampled_kronecker_products.sampled_vec_trick(a, K2, K1, colind, rowind, colind, rowind)
                 return 0.5*(np.dot(z,z)+lamb*np.dot(a, Ka))
+            
             def mv(v):
                 rows = rowind[sv]
                 cols = colind[sv]
                 p = np.zeros(len(rowind))
-                A =  sampled_kronecker_products.sampled_vec_trick(v, K2, K1, cols, rows, colind, rowind)
+                A = sampled_kronecker_products.sampled_vec_trick(v, K2, K1, cols, rows, colind, rowind)
                 p[sv] = A
                 return p + lamb * v
+            def mv_mk(v):
+                rows = rowind[sv]
+                cols = colind[sv]
+                p = np.zeros(len(rowind))
+                skpsum = np.zeros(len(sv))
+                for i in range(len(K1)):
+                    K1i = K1[i]
+                    K2i = K2[i]
+                    skpsum += weights[i] * sampled_kronecker_products.sampled_vec_trick(v, K2i, K1i, cols, rows, colind, rowind)
+                p[sv] = skpsum
+                return p + lamb * v
+            
             def rv(v):
                 rows = rowind[sv]
                 cols = colind[sv]
                 p = sampled_kronecker_products.sampled_vec_trick(v[sv], K2, K1, colind, rowind, cols, rows)
                 return p + lamb * v
+            
+            def rv_mk(v):
+                rows = rowind[sv]
+                cols = colind[sv]
+                psum = np.zeros(len(v))
+                for i in range(len(K1)):
+                    K1i = K1[i]
+                    K2i = K2[i]
+                    psum += weights[i] * sampled_kronecker_products.sampled_vec_trick(v[sv], K2i, K1i, colind, rowind, cols, rows)
+                return psum + lamb * v
+            
             for i in range(maxiter):
-                P =  sampled_kronecker_products.sampled_vec_trick(a, K2, K1, colind, rowind, colind, rowind)
+                if isinstance(K1, (list, tuple)):
+                    if 'weights' in kwargs: weights = kwargs['weights']
+                    else: weights = np.ones((len(K1)))
+                    A = LinearOperator((ddim, ddim), matvec = mv_mk, rmatvec = rv_mk, dtype = np.float64)
+                    P = np.zeros(ddim)
+                    for i in range(len(K1)):
+                        K1i = K1[i]
+                        K2i = K2[i]
+                        prod_i = weights[i] * sampled_kronecker_products.sampled_vec_trick(a, K2i, K1i, colind, rowind, colind, rowind)
+                        P += prod_i
+                else:
+                    weights = None
+                    A = LinearOperator((ddim, ddim), matvec=mv, rmatvec=rv, dtype=np.float64)
+                    P = sampled_kronecker_products.sampled_vec_trick(a, K2, K1, colind, rowind, colind, rowind)
                 z = (1. - Y*P)
                 z = np.where(z>0, z, 0)
                 sv = np.nonzero(z)[0]
-                #print "support vectors", len(sv)
                 B = np.zeros(P.shape)
                 B[sv] = P[sv]-Y[sv]
                 B = B + lamb*a
                 #solve Ax = B
-                A = LinearOperator((ddim, ddim), matvec=mv, rmatvec=rv, dtype=np.float64)
-                self.a_new = qmr(A, B, maxiter=inneriter)[0]
+                self.a_new = qmr(A, B, tol=1e-10, maxiter=inneriter)[0]
                 if np.all(a == a - self.a_new):
                     break
                 a = a - self.a_new
